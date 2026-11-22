@@ -1541,6 +1541,46 @@ for the original architecture spike. The pause feature is now implemented — se
 > table (plus `VAULT_REGISTRY_CONTRACT_ID` and the generated TS bindings via
 > `pnpm contract:bindings`) to pick them up.
 
+### Deterministic Multi-Actor Replay Tests
+
+The `vault-registry` test suite includes a deterministic multi-actor replay harness in
+[`contracts/vault-registry/src/test/multi_actor_replay.rs`](./contracts/vault-registry/src/test/multi_actor_replay.rs)
+that exercises interleaved mutations across `Admin`, `CreatorA`, `CreatorB`, `Settler`,
+`Moderator`, `Verifier`, `Payer`, and an unprivileged `Stranger`.
+
+Run the replay suite directly with:
+
+```bash
+cargo test --manifest-path contract/Cargo.toml multi_actor_replay
+```
+
+#### Covered Paths & Edge Cases
+
+- **Normal multi-actor lifecycle**: Interleaved registration, verification, idempotent payment
+  recording and settlement, two-step ownership transfer (`propose_transfer` → `accept_transfer`),
+  post-transfer price/tag updates, partial creator refunds, moderator flagging/unflagging, and
+  delisting. Replaying the same transcript in two independent `Env` instances must yield
+  identical per-step outcomes, event topic streams, and full world snapshots.
+- **Failure paths & atomic rollback**: Duplicate registrations, invalid prices (`0`),
+  unauthorized role calls (flagging, verifying, pausing), conflicting idempotent payment retries
+  with mismatched amounts, over-refunds exceeding payment totals, and mutations blocked by an
+  active global pause (`Error::ContractPaused`). Every failed step is verified to leave the
+  pre-step world snapshot unchanged and emit zero events.
+- **Retry & recovery behavior**:
+  - Retrying `record_payment_idempotent` with identical arguments after advancing the ledger
+    returns the original receipt as a no-op with zero duplicate events or double-counted earnings.
+  - Mutations rejected while paused succeed cleanly when retried after `set_paused(admin, false)`.
+  - Failed over-refunds leave refunded totals intact so a subsequent valid partial refund succeeds.
+  - Ownership transfers can be cancelled (`cancel_transfer`), re-proposed to another recipient, and
+    accepted cleanly.
+- **Strict authorization & post-transfer revocation**: Under strict `MockAuth` (without
+  `mock_all_auths`), unauthorized signers are rejected on `set_price` and `accept_transfer` with
+  zero state mutation, and former owners lose mutation authority immediately after
+  `accept_transfer` completes.
+- **Order sensitivity & seeded schedules**: Non-commuting operation orderings deterministically
+  diverge, while deterministic seeded schedules verify cross-actor accounting invariants
+  (`listed_count == creator_a_listed + creator_b_listed`, monotonic `count`) at every step.
+
 ### Ideas for contributors
 
 - Optional escrow/refund extension (see the root README's "Not Yet Built").
